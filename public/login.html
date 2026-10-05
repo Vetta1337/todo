@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emil's Liste — Access</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/login.css">
+</head>
+<body>
+  <canvas id="matrix" class="matrix-canvas"></canvas>
+  <div class="scanlines"></div>
+  <div class="grid-bg"></div>
+  <div class="glow glow-a"></div>
+  <div class="glow glow-b"></div>
+
+  <div class="theme-toggle" id="themeToggle" title="Switch theme">
+    <span class="opt" data-theme-opt="neon">NEON</span>
+    <span class="opt" data-theme-opt="terminal">TERM</span>
+  </div>
+
+  <div class="stage">
+    <div class="logo">
+      <span class="bracket">[</span><span class="logo-text" data-text="EMIL'S LISTE">EMIL'S LISTE</span><span class="bracket">]</span>
+    </div>
+    <div class="tagline"><span class="prompt-prefix">root@emilsliste:~$ </span>RESTRICTED ACCESS // AUTHORIZATION REQUIRED<span class="cursor">_</span></div>
+
+    <form id="card" class="card">
+      <label class="field-label" for="password"><span class="prompt-prefix">&gt;</span> PASSCODE</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="••••••••••••" autofocus>
+      <button type="submit" id="submitBtn">
+        <span>UNLOCK</span>
+      </button>
+      <div id="error" class="error"></div>
+    </form>
+
+    <div class="footer">SYSTEM READY · v1.0 · DO NOT SHARE CREDENTIALS</div>
+  </div>
+
+  <script src="js/login.js"></script>
+</body>
+</html>

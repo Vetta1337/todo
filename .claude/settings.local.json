@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(node --check server.js)",
+      "PowerShell(try { Invoke-WebRequest -Uri \"http://localhost:3011/\" -MaximumRedirection 0 -ErrorAction Stop } catch { $_.Exception.Response.StatusCode.value__; $_.Exception.Response.Headers[\"Location\"] })",
+      "PowerShell(Get-Content \"$env:TEMP\\\\wt-out.log\",\"$env:TEMP\\\\wt-err.log\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Id 16868 -Force -ErrorAction SilentlyContinue)"
+    ]
+  }
+}

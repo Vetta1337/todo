@@ -1,0 +1,17 @@
+{
+  "name": "worktracker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/*.test.js",
+    "check": "node scripts/check-syntax.js",
+    "migrate:alfred": "node migrations/001-alfred-events.js"
+  },
+  "dependencies": {
+    "express": "^4.22.3"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "^13.1.0"
+  }
+}

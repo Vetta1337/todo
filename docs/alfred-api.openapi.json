@@ -1,0 +1,1544 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ALFRED Personal TODO API",
+    "version": "1.0.0",
+    "description": "Server-to-server integration for the existing single-account TODO application. Account identity is fixed by deployment; no user or tenant selectors. Production URLs include /todo. Authentication is independent of browser/cabin cookies. Permission scopes are configured server-side using ALFRED_API_SCOPES (default read,write; delete opt-in). All query parameters must occur once. Unknown query/body fields are rejected. Due dates are date-only; timestamps and today semantics use UTC. See alfred-api.md for deployment and race-safe initial/incremental synchronization."
+  },
+  "servers": [
+    {
+      "url": "https://ehalvorsen.no/todo/api/v1",
+      "description": "Production after deployment"
+    },
+    {
+      "url": "http://localhost:3002/todo/api/v1",
+      "description": "Local with BASE_PATH=/todo"
+    }
+  ],
+  "security": [
+    {
+      "serviceBearer": []
+    }
+  ],
+  "paths": {
+    "/todos": {
+      "get": {
+        "operationId": "listTodos",
+        "summary": "List lightweight TODO summaries",
+        "description": "Requires read scope. All filters combine with AND. Ordered by ID, using live keyset pagination. Capture an event checkpoint before initial listing. completed=false includes archived TODOs. Today is the UTC calendar date. Returned cursors carry filters; omit filters on later pages, or repeat the complete unchanged set.",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact status key."
+          },
+          {
+            "name": "completed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Derived completion flag."
+          },
+          {
+            "name": "register",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "work",
+                "private"
+              ]
+            },
+            "description": "Work/private register."
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact priority key."
+          },
+          {
+            "name": "customer_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact customer ID."
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact project ID."
+          },
+          {
+            "name": "due_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Inclusive lower date bound. Undated TODOs excluded."
+          },
+          {
+            "name": "due_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Inclusive upper date bound. Undated TODOs excluded."
+          },
+          {
+            "name": "due_today",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Due date equals UTC today, regardless of completion."
+          },
+          {
+            "name": "overdue",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Due before UTC today and status neither done nor archived."
+          },
+          {
+            "name": "updated_since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Exclusive lower timestamp bound, with timezone. Not reliable incremental sync; use /events for deletions and equal/client timestamps."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 100
+            },
+            "description": "Page size."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque signed cursor. Omit on the first page."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body/query/cursor; unknown fields rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token lacks required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale If-Match or sync_reset_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Generic internal error; no implementation details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTodo",
+        "summary": "Create a TODO",
+        "description": "Requires write scope. IDs/timestamps are server-owned. Body max 256 KiB. No idempotency key: reconcile an ambiguous POST before retrying.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TodoCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "TODO created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoResponse"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Opaque quoted version. Send it in If-Match on PATCH/DELETE for optimistic concurrency.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body/query/cursor; unknown fields rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token lacks required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "JSON body exceeds 256 KiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Generic internal error; no implementation details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/todos/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "Stable existing issue ID. Treat as opaque; older IDs need not be UUIDs."
+        }
+      ],
+      "get": {
+        "operationId": "getTodo",
+        "summary": "Retrieve one TODO",
+        "description": "Requires read scope. Includes notes, description, links and attachment metadata. Omits internal timeline and attachment contents.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoResponse"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Opaque quoted version. Send it in If-Match on PATCH/DELETE for optimistic concurrency.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body/query/cursor; unknown fields rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token lacks required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "TODO or endpoint not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Generic internal error; no implementation details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateTodo",
+        "summary": "Edit, complete or uncomplete a TODO",
+        "description": "Requires write scope. Set status=done to complete; use an existing non-done status to uncomplete. Unknown/server-owned fields rejected. An identical patch is a no-op. Changing register clears an incompatible existing project.",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "ETag returned by detail/create/update. A mismatch returns 409. Omit for commit-order writes."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TodoPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodoResponse"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Opaque quoted version. Send it in If-Match on PATCH/DELETE for optimistic concurrency.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body/query/cursor; unknown fields rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token lacks required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "TODO or endpoint not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale If-Match or sync_reset_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "JSON body exceeds 256 KiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Generic internal error; no implementation details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteTodo",
+        "summary": "Delete a TODO after explicit user confirmation in ALFRED Core",
+        "description": "Requires delete scope, disabled by default. ALFRED Core is responsible for user confirmation. Appends a durable deletion event. Missing TODO returns 404. No request body.",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "ETag returned by detail/create/update. A mismatch returns 409. Omit for commit-order writes."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "TODO deleted. Empty response body."
+          },
+          "400": {
+            "description": "Invalid body/query/cursor; unknown fields rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token lacks required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "TODO or endpoint not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale If-Match or sync_reset_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Generic internal error; no implementation details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metadata": {
+      "get": {
+        "operationId": "getTodoMetadata",
+        "summary": "Retrieve supported taxonomy IDs and keys",
+        "description": "Requires read scope. Read-only metadata, no presentation colors. No query parameters.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetadataResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body/query/cursor; unknown fields rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token lacks required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Generic internal error; no implementation details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "operationId": "listTodoEvents",
+        "summary": "Incrementally retrieve durable changes",
+        "description": "Requires read scope. Events from UI and ALFRED commits, ordered by durable sequence. Omitting cursor starts at the journal beginning. cursor=latest returns an empty page with the current checkpoint. Capture it BEFORE initial list pagination, then replay from it afterward. Persist next_cursor only after applying each page. Event payloads identify changes; fetch current TODO by ID, or delete locally on 404. Refetch /metadata on metadata.updated. One specific completion/uncompletion event per changed TODO, rather than a duplicate generic update. No automatic retention/pruning. A generation reset returns 409 sync_reset_required. Never use timestamps as event cursors.",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Signed event cursor, or the literal latest for a fresh checkpoint."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 100
+            },
+            "description": "Page size."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body/query/cursor; unknown fields rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token lacks required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale If-Match or sync_reset_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Generic internal error; no implementation details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "serviceBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "64-character hexadecimal service token",
+        "description": "ALFRED_API_TOKEN. Never embed in a browser or URL. HTTPS required in production."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "TodoSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "boolean",
+            "description": "Derived from status === done."
+          },
+          "priority": {
+            "type": "string"
+          },
+          "register": {
+            "type": "string",
+            "enum": [
+              "work",
+              "private"
+            ]
+          },
+          "customerId": {
+            "type": "string",
+            "nullable": true
+          },
+          "projectId": {
+            "type": "string",
+            "nullable": true
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dueDate": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "completed",
+          "priority",
+          "register",
+          "customerId",
+          "projectId",
+          "tags",
+          "dueDate",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "Todo": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "boolean",
+            "description": "Derived from status === done."
+          },
+          "priority": {
+            "type": "string"
+          },
+          "register": {
+            "type": "string",
+            "enum": [
+              "work",
+              "private"
+            ]
+          },
+          "customerId": {
+            "type": "string",
+            "nullable": true
+          },
+          "projectId": {
+            "type": "string",
+            "nullable": true
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dueDate": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4096,
+                  "pattern": "^https?://"
+                }
+              },
+              "required": [
+                "provider",
+                "url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "size",
+                "type"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "completed",
+          "priority",
+          "register",
+          "customerId",
+          "projectId",
+          "tags",
+          "dueDate",
+          "createdAt",
+          "updatedAt",
+          "description",
+          "notes",
+          "links",
+          "attachments"
+        ],
+        "additionalProperties": false
+      },
+      "TodoCreate": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Existing status key from /metadata. POST defaults to inbox."
+          },
+          "priority": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Existing priority key. POST defaults to medium."
+          },
+          "register": {
+            "type": "string",
+            "enum": [
+              "work",
+              "private"
+            ],
+            "description": "POST defaults to work."
+          },
+          "customerId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Existing customer ID or null."
+          },
+          "projectId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Existing project ID in the selected register, or null. Selecting a project supplies its customer unless explicitly overridden."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "uniqueItems": true,
+            "description": "Existing tag IDs."
+          },
+          "dueDate": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4096,
+                  "pattern": "^https?://"
+                }
+              },
+              "required": [
+                "provider",
+                "url"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "TodoPatch": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Existing status key from /metadata. POST defaults to inbox."
+          },
+          "priority": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Existing priority key. POST defaults to medium."
+          },
+          "register": {
+            "type": "string",
+            "enum": [
+              "work",
+              "private"
+            ],
+            "description": "POST defaults to work."
+          },
+          "customerId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Existing customer ID or null."
+          },
+          "projectId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Existing project ID in the selected register, or null. Selecting a project supplies its customer unless explicitly overridden."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "uniqueItems": true,
+            "description": "Existing tag IDs."
+          },
+          "dueDate": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4096,
+                  "pattern": "^https?://"
+                }
+              },
+              "required": [
+                "provider",
+                "url"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100
+          }
+        },
+        "additionalProperties": false,
+        "minProperties": 1
+      },
+      "TodoResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Todo"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "TodoPage": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TodoSummary"
+            }
+          },
+          "page": {
+            "type": "object",
+            "properties": {
+              "has_more": {
+                "type": "boolean"
+              },
+              "next_cursor": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "has_more",
+              "next_cursor"
+            ],
+            "additionalProperties": false
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "timezone": {
+                "type": "string",
+                "enum": [
+                  "UTC"
+                ]
+              }
+            },
+            "required": [
+              "timezone"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "data",
+          "page",
+          "meta"
+        ],
+        "additionalProperties": false
+      },
+      "TodoEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "ui",
+              "alfred"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "todo.created",
+              "todo.updated",
+              "todo.completed",
+              "todo.uncompleted",
+              "todo.deleted"
+            ]
+          },
+          "todo_id": {
+            "type": "string"
+          },
+          "register": {
+            "type": "string",
+            "enum": [
+              "work",
+              "private"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "nullable": true
+          },
+          "previous_status": {
+            "type": "string",
+            "nullable": true
+          },
+          "changed_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "sequence",
+          "occurred_at",
+          "source",
+          "type",
+          "todo_id",
+          "register",
+          "status",
+          "previous_status",
+          "changed_fields"
+        ],
+        "additionalProperties": false
+      },
+      "MetadataEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "ui",
+              "alfred"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "metadata.updated"
+            ]
+          },
+          "resource": {
+            "type": "string",
+            "enum": [
+              "statuses",
+              "priorities",
+              "customers",
+              "projects",
+              "tags"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "sequence",
+          "occurred_at",
+          "source",
+          "type",
+          "resource"
+        ],
+        "additionalProperties": false
+      },
+      "EventPage": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TodoEvent"
+                },
+                {
+                  "$ref": "#/components/schemas/MetadataEvent"
+                }
+              ]
+            }
+          },
+          "page": {
+            "type": "object",
+            "properties": {
+              "has_more": {
+                "type": "boolean"
+              },
+              "next_cursor": {
+                "type": "string",
+                "description": "Always present, including for an empty page. Persist after processing."
+              }
+            },
+            "required": [
+              "has_more",
+              "next_cursor"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "data",
+          "page"
+        ],
+        "additionalProperties": false
+      },
+      "MetadataResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "statuses": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "priorities": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "customers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "projects": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "customerId": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "register": {
+                      "type": "string",
+                      "enum": [
+                        "work",
+                        "private"
+                      ]
+                    },
+                    "archived": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "customerId",
+                    "register",
+                    "archived"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "registers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "work",
+                    "private"
+                  ]
+                }
+              },
+              "timezone": {
+                "type": "string",
+                "enum": [
+                  "UTC"
+                ]
+              },
+              "completion_status": {
+                "type": "string",
+                "enum": [
+                  "done"
+                ]
+              },
+              "archived_status": {
+                "type": "string",
+                "enum": [
+                  "archived"
+                ]
+              }
+            },
+            "required": [
+              "statuses",
+              "priorities",
+              "customers",
+              "tags",
+              "projects",
+              "registers",
+              "timezone",
+              "completion_status",
+              "archived_status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}
